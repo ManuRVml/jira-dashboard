@@ -1,0 +1,40 @@
+{
+  "name": "jira-dashboard",
+  "version": "1.0.0",
+  "description": "Jira Dashboard — Gestión de tareas, informes y analíticas",
+  "main": "server.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "server": "node server.js",
+    "start": "npm run build && NODE_ENV=production node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "cors": "^2.8.6",
+    "docx": "^9.6.1",
+    "dompurify": "^3.3.2",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "jspdf": "^4.2.0",
+    "jspdf-autotable": "^5.0.7",
+    "multer": "^2.1.1",
+    "node-fetch": "^2.7.0",
+    "papaparse": "^5.5.3",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "react-is": "^19.2.4",
+    "react-router-dom": "^7.13.1",
+    "recharts": "^3.8.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^5.1.4",
+    "vite": "^7.3.1"
+  }
+}
