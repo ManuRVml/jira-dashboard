@@ -7,7 +7,7 @@ node_modules/
 .env.*.local
 
 # ─── Build / distribución ────────────────────────────────────────────────────
-dist/
+# dist/ is committed intentionally for Render pre-build deployment
 dist-ssr/
 build/
 
