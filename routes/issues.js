@@ -454,12 +454,10 @@ router.post('/:key/warranty', async (req, res) => {
     if (warranty) {
       // Add the canonical warranty marker comment
       const markerText =
-        '<!-- STRUCTURED_COMMENT:v2 -->\n' +
-        '<!-- COMMENT_TYPE:warranty -->\n' +
+        '{color:#f4f5f7}[SCv2:warranty]{color}\n' +
         'h2. 🛡️ Caso en Garantia\n\n' +
         'Este caso fue reportado como cubierto en el bloque anterior. ' +
-        'Se arrastra como caso en garantía — las horas ejecutadas *no se descuentan* de la bolsa del bloque actual.\n\n' +
-        '<!-- /STRUCTURED_COMMENT -->';
+        'Se arrastra como caso en garantía — las horas ejecutadas *no se descuentan* de la bolsa del bloque actual.\n';
 
       const data = await jira.post(jira.restApi(`/issue/${issueKey}/comment`), {
         body: markerText,
@@ -516,6 +514,30 @@ router.post('/:key/comment', async (req, res) => {
       body = { body: extractText(req.body.body) };
     }
     const data = await jira.post(jira.restApi(`/issue/${req.params.key}/comment`), body);
+    res.json(data);
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message, body: err.body });
+  }
+});
+
+// Update existing comment
+router.put('/:key/comment/:commentId', async (req, res) => {
+  try {
+    let body = req.body;
+    // For Jira Server (API v2), comments are plain text
+    if (jira.isServer && req.body?.body?.type === 'doc') {
+      const extractText = (node) => {
+        if (!node) return '';
+        if (node.text) return node.text;
+        if (node.content) return node.content.map(extractText).join('');
+        return '';
+      };
+      body = { body: extractText(req.body.body) };
+    }
+    const data = await jira.put(
+      jira.restApi(`/issue/${req.params.key}/comment/${req.params.commentId}`),
+      body
+    );
     res.json(data);
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message, body: err.body });

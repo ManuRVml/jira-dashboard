@@ -70,6 +70,12 @@ export const api = {
   addComment: (key, body) =>
     request(`/issues/${key}/comment`, { method: 'POST', body: JSON.stringify(body) }),
 
+  updateComment: (key, commentId, body) =>
+    request(`/issues/${key}/comment/${commentId}`, { method: 'PUT', body: JSON.stringify(body) }),
+
+  reformatComment: (text) =>
+    request('/ai/reformat-comment', { method: 'POST', body: JSON.stringify({ text }) }),
+
   uploadAttachment: (key, files) => {
     const formData = new FormData();
     for (const file of files) {

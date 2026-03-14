@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useIssue } from '../hooks/useJira';
 import { StatusBadge, PriorityBadge, WarrantyBadge } from '../components/StatusBadge';
 import { api } from '../lib/api';
+import { wikiToHtml } from '../lib/wikiMarkup';
 import StructuredCommentForm from '../components/StructuredCommentForm';
 import TimeBar from '../components/TimeBar';
 
@@ -13,9 +14,15 @@ export default function TaskDetailPage() {
   const [commentText, setCommentText] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [uploadMsg, setUploadMsg] = useState('');
+  const [toast, setToast] = useState(null); // { type: 'success'|'error', msg: string }
   const fileInputRef = useRef();
   const [activeTab, setActiveTab] = useState('details');
-  const [commentMode, setCommentMode] = useState('structured'); // 'free' or 'structured'
+  const [commentMode, setCommentMode] = useState('structured');
+
+  // AI comment formatting state
+  const [aiFormatState, setAiFormatState] = useState({}); // { [commentId]: 'idle'|'formatting'|'preview'|'editing'|'updating' }
+  const [aiFormatResult, setAiFormatResult] = useState({}); // { [commentId]: { formatted, detectedType } }
+  const [aiEditText, setAiEditText] = useState({}); // { [commentId]: string }
 
   // Dev info (PRs, branches)
   const [devInfo, setDevInfo] = useState(null);
@@ -27,7 +34,7 @@ export default function TaskDetailPage() {
   // Warranty state
   const [markingWarranty, setMarkingWarranty] = useState(false);
   const WARRANTY_RE = /caso\s+en\s+garant[ií]a/i;
-  const WARRANTY_TYPE_RE = /COMMENT_TYPE:warranty/;
+  const WARRANTY_TYPE_RE = /COMMENT_TYPE:warranty|\[SCv2:warranty\]/;
   const detectWarranty = (cmts) =>
     cmts.some(c => {
       const body = c.body || '';
@@ -49,6 +56,13 @@ export default function TaskDetailPage() {
       .then(data => setTimeInfo(data?.timeInfo || null))
       .catch(() => setTimeInfo(null));
   }, [key]);
+
+  // Auto-dismiss toast after 4 seconds
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 4000);
+    return () => clearTimeout(t);
+  }, [toast]);
 
   if (loading) {
     return (
@@ -100,9 +114,10 @@ export default function TaskDetailPage() {
         },
       });
       setCommentText('');
+      setToast({ type: 'success', msg: '✅ Comentario agregado correctamente' });
       refresh();
     } catch (err) {
-      alert('Error al agregar comentario: ' + err.message);
+      setToast({ type: 'error', msg: '❌ Error al agregar comentario: ' + err.message });
     } finally {
       setSubmitting(false);
     }
@@ -112,16 +127,33 @@ export default function TaskDetailPage() {
   const handleStructuredSubmit = async (markdown, images, timeData) => {
     setSubmitting(true);
     try {
-      // Upload images first if any
+      let finalMarkdown = markdown;
+
+      // Upload images first if any, then embed them in the comment
       if (images.length > 0) {
-        await api.uploadAttachment(key, images);
+        const uploadResult = await api.uploadAttachment(key, images);
+        // Jira returns an array of attachment objects with { filename, ... }
+        const attachedFiles = Array.isArray(uploadResult) ? uploadResult : [];
+        const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp'];
+        const imageAttachments = attachedFiles.filter(a => {
+          const ext = a.filename?.split('.').pop()?.toLowerCase();
+          return imageExts.includes(ext);
+        });
+
+        if (imageAttachments.length > 0) {
+          finalMarkdown += '\nh3. 📸 Capturas adjuntas\n';
+          imageAttachments.forEach(a => {
+            finalMarkdown += `!${a.filename}|thumbnail!\n`;
+          });
+        }
       }
+
       // Send structured comment as plain text (Jira Server v2)
       await api.addComment(key, {
         body: {
           type: 'doc',
           version: 1,
-          content: [{ type: 'paragraph', content: [{ type: 'text', text: markdown }] }],
+          content: [{ type: 'paragraph', content: [{ type: 'text', text: finalMarkdown }] }],
         },
       });
       // Log worklog if time provided
@@ -133,9 +165,10 @@ export default function TaskDetailPage() {
           } catch (e) { /* worklog optional */ }
         }
       }
+      setToast({ type: 'success', msg: '✅ Comentario estructurado enviado correctamente' });
       refresh();
     } catch (err) {
-      alert('Error al enviar comentario: ' + err.message);
+      setToast({ type: 'error', msg: '❌ Error al enviar comentario: ' + err.message });
     } finally {
       setSubmitting(false);
     }
@@ -151,125 +184,54 @@ export default function TaskDetailPage() {
   };
 
   const detectCommentType = (text) => {
+    // New format: {color:#f4f5f7}[SCv2:adjustment]{color}
+    const m2 = text.match(/\[SCv2:(\w+)\]/);
+    if (m2) return m2[1];
+    // Legacy format: <!-- COMMENT_TYPE:adjustment -->
     const m = text.match(/<!-- COMMENT_TYPE:(\w+) -->/);
     return m ? m[1] : null;
   };
 
-  // Render structured comments with rich wiki markup
+  // ── AI Comment Formatting Handlers ──────────────────────────────────────────
+  const handleAiFormat = async (commentId, text) => {
+    setAiFormatState(prev => ({ ...prev, [commentId]: 'formatting' }));
+    try {
+      const data = await api.reformatComment(text);
+      setAiFormatResult(prev => ({ ...prev, [commentId]: data }));
+      setAiEditText(prev => ({ ...prev, [commentId]: data.formatted }));
+      setAiFormatState(prev => ({ ...prev, [commentId]: 'preview' }));
+    } catch (err) {
+      setToast({ type: 'error', msg: '❌ Error al formatear: ' + err.message });
+      setAiFormatState(prev => ({ ...prev, [commentId]: 'idle' }));
+    }
+  };
+
+  const handleAiUpdate = async (commentId) => {
+    setAiFormatState(prev => ({ ...prev, [commentId]: 'updating' }));
+    try {
+      const formattedBody = aiEditText[commentId] || aiFormatResult[commentId]?.formatted;
+      await api.updateComment(key, commentId, { body: formattedBody });
+      setToast({ type: 'success', msg: '✅ Comentario actualizado y formateado en Jira' });
+      setAiFormatState(prev => ({ ...prev, [commentId]: 'idle' }));
+      setAiFormatResult(prev => { const n = { ...prev }; delete n[commentId]; return n; });
+      setAiEditText(prev => { const n = { ...prev }; delete n[commentId]; return n; });
+      refresh();
+    } catch (err) {
+      setToast({ type: 'error', msg: '❌ Error al actualizar: ' + err.message });
+      setAiFormatState(prev => ({ ...prev, [commentId]: 'preview' }));
+    }
+  };
+
+  const handleAiCancel = (commentId) => {
+    setAiFormatState(prev => ({ ...prev, [commentId]: 'idle' }));
+    setAiFormatResult(prev => { const n = { ...prev }; delete n[commentId]; return n; });
+    setAiEditText(prev => { const n = { ...prev }; delete n[commentId]; return n; });
+  };
+
   const renderStructuredComment = (text) => {
     const commentType = detectCommentType(text);
     const typeMeta = commentType ? COMMENT_TYPE_META[commentType] : null;
-
-    // Strip markers
-    const content = text
-      .replace(/<!-- STRUCTURED_COMMENT:v[12] -->/g, '')
-      .replace(/<!-- COMMENT_TYPE:\w+ -->/g, '')
-      .replace(/<!-- \/STRUCTURED_COMMENT -->/g, '')
-      .trim();
-
-    // Process code blocks first (preserve their content)
-    const codeBlocks = [];
-    let processed = content.replace(/\{code(?::[^}]*)?\}([\s\S]*?)\{code\}/g, (_, code) => {
-      const idx = codeBlocks.length;
-      codeBlocks.push(code.trim());
-      return `%%CODEBLOCK_${idx}%%`;
-    });
-
-    // Parse wiki markup line by line for better table handling
-    const lines = processed.split('\n');
-    const htmlParts = [];
-    let inTable = false;
-    let tableHasHeader = false;
-    let listItems = [];
-
-    const flushList = () => {
-      if (listItems.length > 0) {
-        htmlParts.push(`<ul class="sc-list">${listItems.map(li => `<li>${li}</li>`).join('')}</ul>`);
-        listItems = [];
-      }
-    };
-
-    const flushTable = () => {
-      if (inTable) {
-        htmlParts.push('</tbody></table>');
-        inTable = false;
-        tableHasHeader = false;
-      }
-    };
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-
-      // Header row: ||col1||col2||
-      if (/^\|\|(.+)\|\|$/.test(line)) {
-        flushList();
-        if (!inTable) {
-          htmlParts.push('<table class="sc-table"><thead>');
-          inTable = true;
-          tableHasHeader = true;
-        }
-        const cols = line.replace(/^\|\|/, '').replace(/\|\|$/, '').split('||');
-        const cells = cols.map(c => `<th>${c.trim()}</th>`).join('');
-        if (tableHasHeader) {
-          htmlParts.push(`<tr>${cells}</tr></thead><tbody>`);
-          tableHasHeader = false;
-        } else {
-          htmlParts.push(`<tr>${cells}</tr>`);
-        }
-        continue;
-      }
-
-      // Data row: |col1|col2|
-      if (/^\|(.+)\|$/.test(line)) {
-        flushList();
-        if (!inTable) {
-          htmlParts.push('<table class="sc-table"><tbody>');
-          inTable = true;
-        }
-        const cols = line.replace(/^\|/, '').replace(/\|$/, '').split('|');
-        const cells = cols.map(c => `<td>${c.trim()}</td>`).join('');
-        htmlParts.push(`<tr>${cells}</tr>`);
-        continue;
-      }
-
-      // Not a table row — close table if open
-      flushTable();
-
-      // Headings
-      const h2 = line.match(/^h2\.\s*(.+)$/);
-      if (h2) { flushList(); htmlParts.push(`<h3 class="sc-h2">${h2[1]}</h3>`); continue; }
-      const h3 = line.match(/^h3\.\s*(.+)$/);
-      if (h3) { flushList(); htmlParts.push(`<h4 class="sc-h3">${h3[1]}</h4>`); continue; }
-      const h4 = line.match(/^h4\.\s*(.+)$/);
-      if (h4) { flushList(); htmlParts.push(`<h5 class="sc-h4">${h4[1]}</h5>`); continue; }
-
-      // List items: * item
-      const li = line.match(/^\*\s+(.+)$/);
-      if (li) { listItems.push(formatInline(li[1])); continue; }
-
-      // Code block placeholder
-      if (/^%%CODEBLOCK_\d+%%$/.test(line.trim())) {
-        flushList();
-        const idx = parseInt(line.match(/%%CODEBLOCK_(\d+)%%/)[1]);
-        htmlParts.push(`<pre class="sc-code-block">${escHtml(codeBlocks[idx])}</pre>`);
-        continue;
-      }
-
-      // Empty line → paragraph break
-      if (line.trim() === '') {
-        flushList();
-        htmlParts.push('<br/>');
-        continue;
-      }
-
-      // Regular text
-      flushList();
-      htmlParts.push(`<p class="sc-p">${formatInline(line)}</p>`);
-    }
-
-    flushList();
-    flushTable();
-
+    const html = wikiToHtml(text);
     const badgeHtml = typeMeta
       ? `<div class="sc-type-badge ct-${typeMeta.color}"><span>${typeMeta.icon}</span><span>${typeMeta.label}</span></div>`
       : '';
@@ -277,26 +239,15 @@ export default function TaskDetailPage() {
     return (
       <div>
         <div dangerouslySetInnerHTML={{ __html: badgeHtml }} />
-        <div className="sc-rendered" dangerouslySetInnerHTML={{ __html: htmlParts.join('') }} />
+        <div className="sc-rendered" dangerouslySetInnerHTML={{ __html: html }} />
       </div>
     );
   };
 
-  // Escape HTML for safe insertion
   const escHtml = (str) => str
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
-
-  // Format inline wiki markup (bold, code, links)
-  const formatInline = (text) => {
-    return text
-      .replace(/\*([^*\n]+)\*/g, '<strong>$1</strong>')
-      .replace(/_([^_\n]+)_/g, '<em>$1</em>')
-      .replace(/\{\{([^}]+)\}\}/g, '<code>$1</code>')
-      .replace(/\[([^|\]]+)\|([^\]]+)\]/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
-      .replace(/\[([^\]]+)\]/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
-  };
 
   const handleFileUpload = async (e) => {
     const files = e.target.files;
@@ -459,6 +410,12 @@ export default function TaskDetailPage() {
 
   return (
     <div>
+      {/* Toast notification */}
+      {toast && (
+        <div className={`toast-notification toast-${toast.type}`} onClick={() => setToast(null)}>
+          {toast.msg}
+        </div>
+      )}
       <div className="task-hero">
         <div className="task-hero-meta">
           <button className="task-back-btn" onClick={() => navigate(-1)}>
@@ -550,7 +507,7 @@ export default function TaskDetailPage() {
                     <button
                       className="btn btn-primary btn-sm"
                       type="submit"
-                      disabled={submitting}
+                      disabled={submitting || !commentText.trim()}
                     >
                       {submitting ? 'Enviando...' : '💬 Agregar Comentario'}
                     </button>
@@ -572,13 +529,16 @@ export default function TaskDetailPage() {
                 ) : (
                   comments.map((c, idx) => {
                     const text = getCommentText(c.body);
-                    const isStructured = text.includes('STRUCTURED_COMMENT');
+                    const isStructured = text.includes('STRUCTURED_COMMENT') || text.includes('[SCv2:');
                     const commentType = isStructured ? detectCommentType(text) : null;
                     const typeMeta = commentType ? COMMENT_TYPE_META[commentType] : null;
                     // Use Jira's pre-rendered HTML for regular comments when available
                     const renderedComments = issue.renderedFields?.comment?.comments;
                     const renderedHtml = renderedComments?.[idx]?.body;
                     const initial = c.author?.displayName?.charAt(0)?.toUpperCase() || '?';
+                    const cState = aiFormatState[c.id] || 'idle';
+                    const cResult = aiFormatResult[c.id];
+                    const cEditText = aiEditText[c.id] || '';
                     return (
                       <div key={c.id} className={`comment-item ${isStructured ? `comment-structured ct-border-${typeMeta?.color || 'default'}` : ''}`}>
                         <div className={`comment-avatar ${typeMeta ? `ct-avatar-${typeMeta.color}` : ''}`}>{initial}</div>
@@ -590,6 +550,20 @@ export default function TaskDetailPage() {
                               : isStructured && <span className="comment-structured-badge">📋 Estructurado</span>
                             }
                             <span className="comment-time">· {new Date(c.created).toLocaleString('es-ES')}</span>
+                            {/* AI Format button — only for non-structured comments */}
+                            {!isStructured && cState === 'idle' && (
+                              <button
+                                type="button"
+                                className="ai-format-btn"
+                                onClick={() => handleAiFormat(c.id, text)}
+                                title="Reformatear este comentario con IA al formato estructurado"
+                              >
+                                ✨ Formatear con IA
+                              </button>
+                            )}
+                            {cState === 'formatting' && (
+                              <span className="ai-format-loading">⏳ Formateando con IA...</span>
+                            )}
                           </div>
                           <div className="comment-text">
                             {isStructured
@@ -599,6 +573,63 @@ export default function TaskDetailPage() {
                                 : <span style={{ whiteSpace: 'pre-wrap' }}>{text}</span>
                             }
                           </div>
+
+                          {/* AI Format Preview / Edit Panel */}
+                          {(cState === 'preview' || cState === 'editing' || cState === 'updating') && cResult && (
+                            <div className="ai-format-preview">
+                              <div className="ai-format-preview-header">
+                                <span className="ai-format-preview-title">✨ Vista previa — Comentario formateado con IA</span>
+                                {cResult.detectedType && COMMENT_TYPE_META[cResult.detectedType] && (
+                                  <span className={`comment-structured-badge ct-${COMMENT_TYPE_META[cResult.detectedType].color}`}>
+                                    {COMMENT_TYPE_META[cResult.detectedType].icon} {COMMENT_TYPE_META[cResult.detectedType].label}
+                                  </span>
+                                )}
+                              </div>
+
+                              {cState !== 'editing' ? (
+                                <div className="ai-format-preview-body">
+                                  <div className="sc-rendered" dangerouslySetInnerHTML={{ __html: wikiToHtml(cEditText || cResult.formatted) }} />
+                                </div>
+                              ) : (
+                                <div className="ai-format-editor">
+                                  <textarea
+                                    className="ai-format-textarea"
+                                    value={cEditText}
+                                    onChange={(e) => setAiEditText(prev => ({ ...prev, [c.id]: e.target.value }))}
+                                    rows={12}
+                                  />
+                                  <div className="ai-format-editor-hint">Formato: Jira Wiki Markup (h2., *negrita*, ||tablas||, etc.)</div>
+                                </div>
+                              )}
+
+                              <div className="ai-format-actions">
+                                <button
+                                  type="button"
+                                  className="btn btn-primary btn-sm ai-update-btn"
+                                  onClick={() => handleAiUpdate(c.id)}
+                                  disabled={cState === 'updating'}
+                                >
+                                  {cState === 'updating' ? '⏳ Actualizando...' : '✅ Actualizar en Jira'}
+                                </button>
+                                <button
+                                  type="button"
+                                  className={`btn btn-ghost btn-sm ${cState === 'editing' ? 'ai-edit-active' : ''}`}
+                                  onClick={() => setAiFormatState(prev => ({ ...prev, [c.id]: cState === 'editing' ? 'preview' : 'editing' }))}
+                                  disabled={cState === 'updating'}
+                                >
+                                  {cState === 'editing' ? '👁 Ver preview' : '✏️ Editar manualmente'}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn btn-ghost btn-sm"
+                                  onClick={() => handleAiCancel(c.id)}
+                                  disabled={cState === 'updating'}
+                                >
+                                  ❌ Cancelar
+                                </button>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       </div>
                     );

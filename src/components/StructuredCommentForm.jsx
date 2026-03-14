@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import RichTextArea from './RichTextArea';
+import { wikiToHtml } from '../lib/wikiMarkup';
 
 // ─── Comment Type Definitions ─────────────────────────────────────────────────
 const COMMENT_TYPES = [
@@ -51,8 +53,9 @@ const EMPTY_CONTENTFUL = {
 const EMPTY_PR = {
   url: '',
   branchSource: '',
-  branchDest: '',
+  branchDest: 'develop',
   status: 'Abierto',
+  description: '',
 };
 
 // ─── Image Processing ─────────────────────────────────────────────────────────
@@ -155,7 +158,7 @@ function ImageUploadZone({ images, onAdd, onRemove, label = '📎 Capturas de pa
   );
 }
 
-function PrFields({ pr, onChange, destPlaceholder = 'develop' }) {
+function PrFields({ pr, onChange }) {
   return (
     <div className="sf-pr-block">
       <div className="sf-row">
@@ -182,15 +185,18 @@ function PrFields({ pr, onChange, destPlaceholder = 'develop' }) {
           />
         </div>
         <div className="sf-arrow">→</div>
-        <div className="sf-field sf-field-grow">
-          <span className="sf-field-label">Branch destino</span>
-          <input
-            type="text"
-            className="form-input sf-mono"
-            placeholder={destPlaceholder}
-            value={pr.branchDest}
-            onChange={(e) => onChange('branchDest', e.target.value)}
-          />
+        <div className="sf-field">
+          <span className="sf-field-label">Destino</span>
+          <div className="sf-env-toggle">
+            <button type="button" className={`sf-env-btn ${pr.branchDest === 'develop' ? 'active dev' : ''}`}
+              onClick={() => onChange('branchDest', 'develop')}>
+              <span className="sf-env-dot dev" /> develop
+            </button>
+            <button type="button" className={`sf-env-btn ${pr.branchDest === 'master' ? 'active prd' : ''}`}
+              onClick={() => onChange('branchDest', 'master')}>
+              <span className="sf-env-dot prd" /> master
+            </button>
+          </div>
         </div>
       </div>
       <div className="sf-row">
@@ -209,6 +215,16 @@ function PrFields({ pr, onChange, destPlaceholder = 'develop' }) {
             ))}
           </div>
         </div>
+      </div>
+      <div className="sf-field" style={{ marginTop: '0.5rem' }}>
+        <span className="sf-field-label">Descripción del PR <span className="sf-optional-inline">(opcional)</span></span>
+        <RichTextArea
+          placeholder="Describe brevemente qué cambió en el PR..."
+          value={pr.description}
+          onChange={(val) => onChange('description', val)}
+          rows={2}
+          context="pr"
+        />
       </div>
     </div>
   );
@@ -257,12 +273,12 @@ function ContentfulFields({ item, onChange }) {
       </div>
       <div className="sf-field">
         <span className="sf-field-label">Descripción del cambio</span>
-        <input
-          type="text"
-          className="form-input"
+        <RichTextArea
           placeholder="Ej: Se actualizó el banner principal..."
           value={item.description}
-          onChange={(e) => onChange('description', e.target.value)}
+          onChange={(val) => onChange('description', val)}
+          rows={3}
+          context="contentful"
         />
       </div>
       <ImageUploadZone
@@ -300,13 +316,15 @@ function TimeFields({ hours, onHoursChange, label = '⏱ Tiempo invertido' }) {
 
 // ─── Markdown Generators ──────────────────────────────────────────────────────
 
-function prMarkdown(pr, label = 'Pull Request') {
-  if (!pr.url && !pr.branchSource && !pr.branchDest) return '';
-  let md = `h3. 🔀 ${label}\n`;
+function prMarkdown(pr, label = 'Pull Request', idx = 0, total = 1) {
+  if (!pr.url && !pr.branchSource) return '';
+  const numLabel = total > 1 ? ` ${idx + 1}` : '';
+  let md = `h3. 🔀 ${label}${numLabel} → {{${pr.branchDest || 'develop'}}}\n`;
   md += `||Campo||Valor||\n`;
   if (pr.url) md += `|URL|[${pr.url}|${pr.url}]|\n`;
   if (pr.branchSource || pr.branchDest) md += `|Branch|{{${pr.branchSource}}} → {{${pr.branchDest}}}|\n`;
   md += `|Estado|${pr.status}|\n`;
+  if (pr.description?.trim()) md += `\n*Descripción:* ${pr.description.trim()}\n`;
   md += `\n`;
   return md;
 }
@@ -341,23 +359,23 @@ export default function StructuredCommentForm({ issueKey, onSubmit, submitting }
   const [estimatedHours, setEstimatedHours] = useState('');
 
   // ── Type 2: Delivery fields
-  const [deliveryKind, setDeliveryKind] = useState('avance'); // 'avance' | 'final'
+  const [deliveryKind, setDeliveryKind] = useState('avance');
   const [deliverySummary, setDeliverySummary] = useState('');
-  const [deliveryPr, setDeliveryPr] = useState({ ...EMPTY_PR, branchDest: 'develop' });
+  const [deliveryPrs, setDeliveryPrs] = useState([{ ...EMPTY_PR, branchDest: 'develop' }]);
   const [deliveryContentful, setDeliveryContentful] = useState([{ ...EMPTY_CONTENTFUL, environment: 'develop' }]);
   const [deliveryHours, setDeliveryHours] = useState('');
   const [deliveryMinutes, setDeliveryMinutes] = useState('');
 
   // ── Type 3: Adjustment fields
-  const [adjustPrevPrUrl, setAdjustPrevPrUrl] = useState('');
   const [adjustDescription, setAdjustDescription] = useState('');
-  const [adjustPr, setAdjustPr] = useState({ ...EMPTY_PR, branchDest: 'develop' });
+  const [adjustPrs, setAdjustPrs] = useState([{ ...EMPTY_PR, branchDest: 'develop' }]);
+  const [adjustContentful, setAdjustContentful] = useState([{ ...EMPTY_CONTENTFUL, environment: 'develop' }]);
   const [adjustHours, setAdjustHours] = useState('');
   const [adjustMinutes, setAdjustMinutes] = useState('');
 
   // ── Type 4: Production PR fields
   const [prodSummary, setProdSummary] = useState('');
-  const [prodPr, setProdPr] = useState({ ...EMPTY_PR, branchDest: 'master' });
+  const [prodPrs, setProdPrs] = useState([{ ...EMPTY_PR, branchDest: 'master' }]);
   const [prodContentful, setProdContentful] = useState([{ ...EMPTY_CONTENTFUL, environment: 'master' }]);
   const [prodHours, setProdHours] = useState('');
   const [prodMinutes, setProdMinutes] = useState('');
@@ -365,8 +383,7 @@ export default function StructuredCommentForm({ issueKey, onSubmit, submitting }
   // ── Type 5: Warranty fields
   const [warrantyProblem, setWarrantyProblem] = useState('');
   const [warrantyContentful, setWarrantyContentful] = useState([{ ...EMPTY_CONTENTFUL, environment: 'develop' }]);
-  const [warrantyHotfixPr, setWarrantyHotfixPr] = useState({ ...EMPTY_PR, branchDest: 'develop' });
-  const [warrantyProdPr, setWarrantyProdPr] = useState({ ...EMPTY_PR, branchDest: 'master' });
+  const [warrantyPrs, setWarrantyPrs] = useState([{ ...EMPTY_PR, branchDest: 'develop' }]);
   const [warrantyHours, setWarrantyHours] = useState('');
   const [warrantyMinutes, setWarrantyMinutes] = useState('');
 
@@ -383,21 +400,20 @@ export default function StructuredCommentForm({ issueKey, onSubmit, submitting }
         if (d.estimatedHours !== undefined) setEstimatedHours(d.estimatedHours);
         if (d.deliveryKind) setDeliveryKind(d.deliveryKind);
         if (d.deliverySummary !== undefined) setDeliverySummary(d.deliverySummary);
-        if (d.deliveryPr) setDeliveryPr(d.deliveryPr);
+        if (d.deliveryPrs) setDeliveryPrs(d.deliveryPrs);
         if (d.deliveryHours !== undefined) setDeliveryHours(d.deliveryHours);
         if (d.deliveryMinutes !== undefined) setDeliveryMinutes(d.deliveryMinutes);
-        if (d.adjustPrevPrUrl !== undefined) setAdjustPrevPrUrl(d.adjustPrevPrUrl);
+
         if (d.adjustDescription !== undefined) setAdjustDescription(d.adjustDescription);
-        if (d.adjustPr) setAdjustPr(d.adjustPr);
+        if (d.adjustPrs) setAdjustPrs(d.adjustPrs);
         if (d.adjustHours !== undefined) setAdjustHours(d.adjustHours);
         if (d.adjustMinutes !== undefined) setAdjustMinutes(d.adjustMinutes);
         if (d.prodSummary !== undefined) setProdSummary(d.prodSummary);
-        if (d.prodPr) setProdPr(d.prodPr);
+        if (d.prodPrs) setProdPrs(d.prodPrs);
         if (d.prodHours !== undefined) setProdHours(d.prodHours);
         if (d.prodMinutes !== undefined) setProdMinutes(d.prodMinutes);
         if (d.warrantyProblem !== undefined) setWarrantyProblem(d.warrantyProblem);
-        if (d.warrantyHotfixPr) setWarrantyHotfixPr(d.warrantyHotfixPr);
-        if (d.warrantyProdPr) setWarrantyProdPr(d.warrantyProdPr);
+        if (d.warrantyPrs) setWarrantyPrs(d.warrantyPrs);
         if (d.warrantyHours !== undefined) setWarrantyHours(d.warrantyHours);
         if (d.warrantyMinutes !== undefined) setWarrantyMinutes(d.warrantyMinutes);
       }
@@ -408,19 +424,19 @@ export default function StructuredCommentForm({ issueKey, onSubmit, submitting }
     const timer = setTimeout(() => {
       localStorage.setItem(draftKey, JSON.stringify({
         commentType, reviewNotes, estimatedHours,
-        deliveryKind, deliverySummary, deliveryPr, deliveryHours, deliveryMinutes,
-        adjustPrevPrUrl, adjustDescription, adjustPr, adjustHours, adjustMinutes,
-        prodSummary, prodPr, prodHours, prodMinutes,
-        warrantyProblem, warrantyHotfixPr, warrantyProdPr, warrantyHours, warrantyMinutes,
+        deliveryKind, deliverySummary, deliveryPrs, deliveryHours, deliveryMinutes,
+        adjustDescription, adjustPrs, adjustHours, adjustMinutes,
+        prodSummary, prodPrs, prodHours, prodMinutes,
+        warrantyProblem, warrantyPrs, warrantyHours, warrantyMinutes,
       }));
     }, 600);
     return () => clearTimeout(timer);
   }, [
     commentType, reviewNotes, estimatedHours,
-    deliveryKind, deliverySummary, deliveryPr, deliveryHours, deliveryMinutes,
-    adjustPrevPrUrl, adjustDescription, adjustPr, adjustHours, adjustMinutes,
-    prodSummary, prodPr, prodHours, prodMinutes,
-    warrantyProblem, warrantyHotfixPr, warrantyProdPr, warrantyHours, warrantyMinutes,
+    deliveryKind, deliverySummary, deliveryPrs, deliveryHours, deliveryMinutes,
+    adjustDescription, adjustPrs, adjustHours, adjustMinutes,
+    prodSummary, prodPrs, prodHours, prodMinutes,
+    warrantyProblem, warrantyPrs, warrantyHours, warrantyMinutes,
     draftKey,
   ]);
 
@@ -436,20 +452,27 @@ export default function StructuredCommentForm({ issueKey, onSubmit, submitting }
   };
 
   // Update PR helper
-  const updatePr = (setPr, field, value) => setPr((prev) => ({ ...prev, [field]: value }));
+  const updatePrItem = (list, setList, idx, field, value) => {
+    setList(list.map((pr, i) => i === idx ? { ...pr, [field]: value } : pr));
+  };
+  const addPrItem = (list, setList, dest = 'develop') => {
+    setList([...list, { ...EMPTY_PR, branchDest: dest }]);
+  };
+  const removePrItem = (list, setList, idx) => {
+    setList(list.filter((_, i) => i !== idx));
+  };
 
-  // Collect all images/files for upload
   const collectImages = () => {
     const all = [];
-    // Type-specific Contentful images
     if (commentType === 'delivery') {
       deliveryContentful.forEach((c) => c.images.forEach((img) => all.push(img.file)));
+    } else if (commentType === 'adjustment') {
+      adjustContentful.forEach((c) => c.images.forEach((img) => all.push(img.file)));
     } else if (commentType === 'production') {
       prodContentful.forEach((c) => c.images.forEach((img) => all.push(img.file)));
     } else if (commentType === 'warranty') {
       warrantyContentful.forEach((c) => c.images.forEach((img) => all.push(img.file)));
     }
-    // Universal attachments (always)
     generalFiles.forEach((gf) => all.push(gf.file));
     return all;
   };
@@ -458,8 +481,7 @@ export default function StructuredCommentForm({ issueKey, onSubmit, submitting }
   const generateMarkdown = useCallback(() => {
     const typeInfo = COMMENT_TYPES.find((t) => t.id === commentType);
     const now = new Date().toISOString().slice(0, 16).replace('T', ' ');
-    let md = `<!-- STRUCTURED_COMMENT:v2 -->\n`;
-    md += `<!-- COMMENT_TYPE:${commentType} -->\n`;
+    let md = `{color:#f4f5f7}[SCv2:${commentType}]{color}\n`;
     md += `h2. ${typeInfo.icon} ${typeInfo.label}\n`;
     md += `*Fecha:* ${now}\n\n`;
 
@@ -480,7 +502,9 @@ export default function StructuredCommentForm({ issueKey, onSubmit, submitting }
       if (deliverySummary.trim()) {
         md += `h3. 📝 Resumen\n${deliverySummary.trim()}\n\n`;
       }
-      md += prMarkdown(deliveryPr, 'Pull Request → develop');
+      deliveryPrs.forEach((pr, i) => {
+        md += prMarkdown(pr, 'Pull Request', i, deliveryPrs.length);
+      });
       if (deliveryContentful.some((c) => c.url || c.description || c.images.length > 0)) {
         md += `h3. 📦 Cambios en Contentful (develop)\n\n`;
         deliveryContentful.forEach((c, i) => {
@@ -491,15 +515,18 @@ export default function StructuredCommentForm({ issueKey, onSubmit, submitting }
 
     } else if (commentType === 'adjustment') {
       // ── Type 3
-      if (adjustPrevPrUrl) {
-        md += `h3. 🔗 PR anterior\n`;
-        md += `[${adjustPrevPrUrl}|${adjustPrevPrUrl}]\n\n`;
-      }
+
       if (adjustDescription.trim()) {
         md += `h3. 📝 Descripción del ajuste\n${adjustDescription.trim()}\n\n`;
       }
-      if (adjustPr.url || adjustPr.branchSource) {
-        md += prMarkdown(adjustPr, 'PR actualizado');
+      adjustPrs.forEach((pr, i) => {
+        md += prMarkdown(pr, 'PR actualizado', i, adjustPrs.length);
+      });
+      if (adjustContentful.some((c) => c.url || c.description || c.images.length > 0)) {
+        md += `h3. 📦 Cambios en Contentful\n\n`;
+        adjustContentful.forEach((c, i) => {
+          md += contentfulMarkdown(c, i, adjustContentful.length);
+        });
       }
       md += timeMarkdown(adjustHours);
 
@@ -508,7 +535,9 @@ export default function StructuredCommentForm({ issueKey, onSubmit, submitting }
       if (prodSummary.trim()) {
         md += `h3. 📝 Resumen\n${prodSummary.trim()}\n\n`;
       }
-      md += prMarkdown(prodPr, 'Pull Request → master');
+      prodPrs.forEach((pr, i) => {
+        md += prMarkdown(pr, 'Pull Request', i, prodPrs.length);
+      });
       if (prodContentful.some((c) => c.url || c.description || c.images.length > 0)) {
         md += `h3. 📦 Cambios en Contentful (master)\n\n`;
         prodContentful.forEach((c, i) => {
@@ -528,12 +557,9 @@ export default function StructuredCommentForm({ issueKey, onSubmit, submitting }
           md += contentfulMarkdown(c, i, warrantyContentful.length);
         });
       }
-      if (warrantyHotfixPr.url || warrantyHotfixPr.branchSource) {
-        md += prMarkdown(warrantyHotfixPr, 'PR Hotfix → develop');
-      }
-      if (warrantyProdPr.url || warrantyProdPr.branchSource) {
-        md += prMarkdown(warrantyProdPr, 'PR Re-deploy → master');
-      }
+      warrantyPrs.forEach((pr, i) => {
+        md += prMarkdown(pr, 'PR Corrección', i, warrantyPrs.length);
+      });
       md += timeMarkdown(warrantyHours);
     }
 
@@ -547,23 +573,23 @@ export default function StructuredCommentForm({ issueKey, onSubmit, submitting }
       md += `\n`;
     }
 
-    md += `<!-- /STRUCTURED_COMMENT -->`;
+
     return md;
   }, [
     commentType, estimatedHours, reviewNotes,
-    deliveryKind, deliverySummary, deliveryPr, deliveryContentful, deliveryHours, deliveryMinutes,
-    adjustPrevPrUrl, adjustDescription, adjustPr, adjustHours, adjustMinutes,
-    prodSummary, prodPr, prodContentful, prodHours, prodMinutes,
-    warrantyProblem, warrantyContentful, warrantyHotfixPr, warrantyProdPr, warrantyHours, warrantyMinutes,
+    deliveryKind, deliverySummary, deliveryPrs, deliveryContentful, deliveryHours, deliveryMinutes,
+    adjustDescription, adjustPrs, adjustContentful, adjustHours, adjustMinutes,
+    prodSummary, prodPrs, prodContentful, prodHours, prodMinutes,
+    warrantyProblem, warrantyContentful, warrantyPrs, warrantyHours, warrantyMinutes,
     generalFiles,
   ]);
 
   // Validation
   const isValid = () => {
     if (commentType === 'review') return !!estimatedHours && parseInt(estimatedHours) > 0;
-    if (commentType === 'delivery') return !!(deliveryPr.url || deliverySummary.trim());
-    if (commentType === 'adjustment') return !!(adjustDescription.trim() || adjustPrevPrUrl);
-    if (commentType === 'production') return !!(prodPr.url || prodSummary.trim());
+    if (commentType === 'delivery') return !!(deliveryPrs.some(pr => pr.url) || deliverySummary.trim());
+    if (commentType === 'adjustment') return !!(adjustDescription.trim() || adjustContentful.some((c) => c.url || c.description || c.images.length > 0));
+    if (commentType === 'production') return !!(prodPrs.some(pr => pr.url) || prodSummary.trim());
     if (commentType === 'warranty') return !!(warrantyProblem.trim());
     return false;
   };
@@ -571,20 +597,20 @@ export default function StructuredCommentForm({ issueKey, onSubmit, submitting }
   const resetForm = () => {
     setReviewNotes(''); setEstimatedHours('');
     setDeliveryKind('avance'); setDeliverySummary('');
-    setDeliveryPr({ ...EMPTY_PR, branchDest: 'develop' });
+    setDeliveryPrs([{ ...EMPTY_PR, branchDest: 'develop' }]);
     setDeliveryContentful([{ ...EMPTY_CONTENTFUL, environment: 'develop' }]);
     setDeliveryHours(''); setDeliveryMinutes('');
     setAdjustPrevPrUrl(''); setAdjustDescription('');
-    setAdjustPr({ ...EMPTY_PR, branchDest: 'develop' });
+    setAdjustPrs([{ ...EMPTY_PR, branchDest: 'develop' }]);
+    setAdjustContentful([{ ...EMPTY_CONTENTFUL, environment: 'develop' }]);
     setAdjustHours(''); setAdjustMinutes('');
     setProdSummary('');
-    setProdPr({ ...EMPTY_PR, branchDest: 'master' });
+    setProdPrs([{ ...EMPTY_PR, branchDest: 'master' }]);
     setProdContentful([{ ...EMPTY_CONTENTFUL, environment: 'master' }]);
     setProdHours(''); setProdMinutes('');
     setWarrantyProblem('');
     setWarrantyContentful([{ ...EMPTY_CONTENTFUL, environment: 'develop' }]);
-    setWarrantyHotfixPr({ ...EMPTY_PR, branchDest: 'develop' });
-    setWarrantyProdPr({ ...EMPTY_PR, branchDest: 'master' });
+    setWarrantyPrs([{ ...EMPTY_PR, branchDest: 'develop' }]);
     setWarrantyHours(''); setWarrantyMinutes('');
     setGeneralFiles([]);
     localStorage.removeItem(draftKey);
@@ -631,12 +657,12 @@ export default function StructuredCommentForm({ issueKey, onSubmit, submitting }
           </div>
           <div className="sf-section">
             <label className="sf-label">📝 Notas de revisión <span className="sf-optional">(opcional)</span></label>
-            <textarea
-              className="form-textarea sf-textarea"
+            <RichTextArea
               placeholder="Observaciones, supuestos, alcance, riesgos o condiciones especiales..."
               value={reviewNotes}
-              onChange={(e) => setReviewNotes(e.target.value)}
+              onChange={setReviewNotes}
               rows={4}
+              context="revision"
             />
           </div>
         </>
@@ -659,17 +685,30 @@ export default function StructuredCommentForm({ issueKey, onSubmit, submitting }
           </div>
           <div className="sf-section">
             <label className="sf-label">📝 Resumen de cambios</label>
-            <textarea
-              className="form-textarea sf-textarea"
+            <RichTextArea
               placeholder="Describe brevemente qué se implementó..."
               value={deliverySummary}
-              onChange={(e) => setDeliverySummary(e.target.value)}
+              onChange={setDeliverySummary}
               rows={3}
+              context="resumen"
             />
           </div>
           <div className="sf-section sf-section-bordered sf-pr-section">
-            <label className="sf-label">🔀 Pull Request → <code>develop</code></label>
-            <PrFields pr={deliveryPr} onChange={(f, v) => updatePr(setDeliveryPr, f, v)} destPlaceholder="develop" />
+            <label className="sf-label">🔀 Pull Requests</label>
+            {deliveryPrs.map((pr, idx) => (
+              <div key={idx} className="sf-contentful-card">
+                <div className="sf-contentful-header">
+                  <span className="sf-contentful-num">PR {idx + 1} → <code>{pr.branchDest}</code></span>
+                  {deliveryPrs.length > 1 && (
+                    <button type="button" className="sf-remove-btn" onClick={() => removePrItem(deliveryPrs, setDeliveryPrs, idx)}>✕</button>
+                  )}
+                </div>
+                <PrFields pr={pr} onChange={(f, v) => updatePrItem(deliveryPrs, setDeliveryPrs, idx, f, v)} />
+              </div>
+            ))}
+            <button type="button" className="btn btn-ghost sf-add-btn" onClick={() => addPrItem(deliveryPrs, setDeliveryPrs, 'develop')}>
+              + Agregar otro Pull Request
+            </button>
           </div>
           <div className="sf-section sf-section-bordered sf-cms-section">
             <label className="sf-label">📦 Cambios en Contentful <span className="sf-env-chip dev">develop</span></label>
@@ -700,29 +739,51 @@ export default function StructuredCommentForm({ issueKey, onSubmit, submitting }
       return (
         <>
           <div className="sf-section">
-            <label className="sf-label">🔗 URL del PR anterior</label>
-            <input
-              type="url"
-              className="form-input"
-              placeholder="https://bitbucket.org/.../pull-requests/123"
-              value={adjustPrevPrUrl}
-              onChange={(e) => setAdjustPrevPrUrl(e.target.value)}
-            />
-            <p className="sf-hint">El PR que requiere el ajuste.</p>
-          </div>
-          <div className="sf-section">
             <label className="sf-label">📝 Descripción del ajuste <span className="sf-required">*</span></label>
-            <textarea
-              className="form-textarea sf-textarea"
+            <RichTextArea
               placeholder="Describe qué se ajusta y por qué..."
               value={adjustDescription}
-              onChange={(e) => setAdjustDescription(e.target.value)}
+              onChange={setAdjustDescription}
               rows={4}
+              context="ajuste"
             />
           </div>
           <div className="sf-section sf-section-bordered sf-pr-section">
-            <label className="sf-label">🔀 PR actualizado <span className="sf-optional">(si aplica)</span></label>
-            <PrFields pr={adjustPr} onChange={(f, v) => updatePr(setAdjustPr, f, v)} destPlaceholder="develop" />
+            <label className="sf-label">🔀 PR actualizados <span className="sf-optional">(si aplica)</span></label>
+            {adjustPrs.map((pr, idx) => (
+              <div key={idx} className="sf-contentful-card">
+                <div className="sf-contentful-header">
+                  <span className="sf-contentful-num">PR {idx + 1} → <code>{pr.branchDest}</code></span>
+                  {adjustPrs.length > 1 && (
+                    <button type="button" className="sf-remove-btn" onClick={() => removePrItem(adjustPrs, setAdjustPrs, idx)}>✕</button>
+                  )}
+                </div>
+                <PrFields pr={pr} onChange={(f, v) => updatePrItem(adjustPrs, setAdjustPrs, idx, f, v)} />
+              </div>
+            ))}
+            <button type="button" className="btn btn-ghost sf-add-btn" onClick={() => addPrItem(adjustPrs, setAdjustPrs, 'develop')}>
+              + Agregar otro Pull Request
+            </button>
+          </div>
+          <div className="sf-section sf-section-bordered sf-cms-section">
+            <label className="sf-label">📦 Cambios en Contentful <span className="sf-optional">(si aplica)</span></label>
+            {adjustContentful.map((item, idx) => (
+              <div key={idx} className="sf-contentful-card">
+                <div className="sf-contentful-header">
+                  <span className="sf-contentful-num">Cambio {idx + 1}</span>
+                  {adjustContentful.length > 1 && (
+                    <button type="button" className="sf-remove-btn" onClick={() => removeContentfulItem(adjustContentful, setAdjustContentful, idx)}>✕</button>
+                  )}
+                </div>
+                <ContentfulFields
+                  item={item}
+                  onChange={(f, v) => updateContentfulItem(adjustContentful, setAdjustContentful, idx, f, v)}
+                />
+              </div>
+            ))}
+            <button type="button" className="btn btn-ghost sf-add-btn" onClick={() => addContentfulItem(adjustContentful, setAdjustContentful, 'develop')}>
+              + Agregar otro cambio en Contentful
+            </button>
           </div>
           <TimeFields hours={adjustHours} onHoursChange={setAdjustHours} />
         </>
@@ -734,17 +795,30 @@ export default function StructuredCommentForm({ issueKey, onSubmit, submitting }
         <>
           <div className="sf-section">
             <label className="sf-label">📝 Resumen / Notas de despliegue</label>
-            <textarea
-              className="form-textarea sf-textarea"
+            <RichTextArea
               placeholder="Describe los cambios que van a producción, consideraciones especiales, rollback si aplica..."
               value={prodSummary}
-              onChange={(e) => setProdSummary(e.target.value)}
+              onChange={setProdSummary}
               rows={3}
+              context="despliegue"
             />
           </div>
           <div className="sf-section sf-section-bordered sf-pr-section">
-            <label className="sf-label">🔀 Pull Request → <code>master</code></label>
-            <PrFields pr={prodPr} onChange={(f, v) => updatePr(setProdPr, f, v)} destPlaceholder="master" />
+            <label className="sf-label">🔀 Pull Requests</label>
+            {prodPrs.map((pr, idx) => (
+              <div key={idx} className="sf-contentful-card">
+                <div className="sf-contentful-header">
+                  <span className="sf-contentful-num">PR {idx + 1} → <code>{pr.branchDest}</code></span>
+                  {prodPrs.length > 1 && (
+                    <button type="button" className="sf-remove-btn" onClick={() => removePrItem(prodPrs, setProdPrs, idx)}>✕</button>
+                  )}
+                </div>
+                <PrFields pr={pr} onChange={(f, v) => updatePrItem(prodPrs, setProdPrs, idx, f, v)} />
+              </div>
+            ))}
+            <button type="button" className="btn btn-ghost sf-add-btn" onClick={() => addPrItem(prodPrs, setProdPrs, 'master')}>
+              + Agregar otro Pull Request
+            </button>
           </div>
           <div className="sf-section sf-section-bordered sf-cms-section cms-prd">
             <label className="sf-label">📦 Cambios en Contentful <span className="sf-env-chip prd">master</span></label>
@@ -776,12 +850,12 @@ export default function StructuredCommentForm({ issueKey, onSubmit, submitting }
         <>
           <div className="sf-section">
             <label className="sf-label">🚨 Problema detectado <span className="sf-required">*</span></label>
-            <textarea
-              className="form-textarea sf-textarea"
+            <RichTextArea
               placeholder="Describe el problema encontrado en producción: qué falló, cómo se reprodujo, impacto..."
               value={warrantyProblem}
-              onChange={(e) => setWarrantyProblem(e.target.value)}
+              onChange={setWarrantyProblem}
               rows={4}
+              context="problema"
             />
           </div>
           <div className="sf-section sf-section-bordered sf-cms-section">
@@ -805,14 +879,22 @@ export default function StructuredCommentForm({ issueKey, onSubmit, submitting }
             </button>
           </div>
           <div className="sf-section sf-section-bordered sf-pr-section">
-            <label className="sf-label">🔀 PR Hotfix → <code>develop</code></label>
-            <p className="sf-hint">PR con la corrección hacia develop primero.</p>
-            <PrFields pr={warrantyHotfixPr} onChange={(f, v) => updatePr(setWarrantyHotfixPr, f, v)} destPlaceholder="develop" />
-          </div>
-          <div className="sf-section sf-section-bordered sf-pr-section sf-pr-prd">
-            <label className="sf-label">🔀 PR Re-deploy → <code>master</code></label>
-            <p className="sf-hint">PR de merge hacia master para volver a producción.</p>
-            <PrFields pr={warrantyProdPr} onChange={(f, v) => updatePr(setWarrantyProdPr, f, v)} destPlaceholder="master" />
+            <label className="sf-label">🔀 Pull Requests de corrección</label>
+            <p className="sf-hint">PRs con la corrección (hacia develop y/o master).</p>
+            {warrantyPrs.map((pr, idx) => (
+              <div key={idx} className="sf-contentful-card">
+                <div className="sf-contentful-header">
+                  <span className="sf-contentful-num">PR {idx + 1} → <code>{pr.branchDest}</code></span>
+                  {warrantyPrs.length > 1 && (
+                    <button type="button" className="sf-remove-btn" onClick={() => removePrItem(warrantyPrs, setWarrantyPrs, idx)}>✕</button>
+                  )}
+                </div>
+                <PrFields pr={pr} onChange={(f, v) => updatePrItem(warrantyPrs, setWarrantyPrs, idx, f, v)} />
+              </div>
+            ))}
+            <button type="button" className="btn btn-ghost sf-add-btn" onClick={() => addPrItem(warrantyPrs, setWarrantyPrs, 'develop')}>
+              + Agregar otro Pull Request
+            </button>
           </div>
           <TimeFields hours={warrantyHours} onHoursChange={setWarrantyHours} />
         </>
@@ -938,11 +1020,7 @@ export default function StructuredCommentForm({ issueKey, onSubmit, submitting }
               <h3>Vista previa</h3>
               <button className="modal-close" onClick={() => setShowPreview(false)}>✕</button>
             </div>
-            <div className="sc-preview-body">
-              <pre style={{ whiteSpace: 'pre-wrap', fontSize: '0.8rem', color: 'var(--text-muted)', background: 'var(--bg-card)', padding: '16px', borderRadius: '8px', margin: 0 }}>
-                {generateMarkdown()}
-              </pre>
-            </div>
+            <div className="sc-rendered sc-preview-body" dangerouslySetInnerHTML={{ __html: wikiToHtml(generateMarkdown()) }} />
             <div className="sf-actions" style={{ padding: '16px 24px', borderTop: '1px solid var(--border)' }}>
               <button type="button" className="btn btn-ghost" onClick={() => setShowPreview(false)}>Cerrar</button>
               <button
