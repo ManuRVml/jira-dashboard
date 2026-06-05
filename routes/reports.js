@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const jira = require('../lib/jira-client');
-const { generateActivityReport, generateBlockReport } = require('../lib/gemini');
+const { generateActivityReport, generateBlockReport, classifyDeployIntent } = require('../lib/gemini');
 const { generateBlockReportDocx } = require('../lib/docx-generator');
 
 // ===== PENDING DEPLOYS: En Validación + PR-request comment =====
@@ -14,6 +14,93 @@ const DEPLOY_COMMENT_KEYWORDS = [
   /se\s+aplicar[aá]/i,
   /aplicar\s+(?:el\s+)?(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo|\d{1,2}\/\d{1,2})/i,
 ];
+
+// PR URL detection regex — matches Azure DevOps, GitHub, GitLab, Bitbucket PR URLs
+const PR_URL_RE = /https?:\/\/[^\s"'<>)]+(?:pullrequest\/\d+|\/pull\/\d+|\/merge_requests\/\d+)/gi;
+// Keywords signaling a production-targeted PR (labels or branch names)
+const PRD_LABEL_RE = /\bPR[_\s-]?(?:prd|prod(?:uction|uccion|ucción)?|master|main|release|hotfix)[\w_-]*/i;
+const PRD_CONTEXT_RE = /\b(prd|prod|produccion|producción|master|main|release|hotfix)\b/i;
+const DEV_CONTEXT_RE = /\b(dev|develop|desarrollo|feature|staging|qa|test)\b/i;
+// SCv2 production marker — app's own structured comment tag
+const SCV2_PRODUCTION_RE = /\[SCv2:production\]/i;
+// Phrases indicating a confirmed/successful production deploy
+const DEPLOY_VALIDATED_RE = [
+  /paso\s+a\s+producci[oó]n\s+exitoso/i,
+  /producci[oó]n\s+exitos[oa]/i,
+  /deploy\s+exitoso/i,
+  /aplicad[oa]\s+(?:en\s+)?producci[oó]n/i,
+  /se\s+aplic[oó]\s+exitosamente/i,
+  /despliegue\s+exitoso/i,
+  /se\s+realiz[aoó]\s+(?:el\s+)?paso\s+a\s+producci[oó]n/i,
+  /ya\s+(?:est[aá]|fue)\s+en\s+producci[oó]n/i,
+];
+
+/**
+ * Scan all comments of an issue looking for PR URLs that target production.
+ * Returns { prStatus: 'validated'|'generated'|'pending', prUrl: string|null }
+ *
+ * Status ladder:
+ *   'pending'   — no production PR URL found
+ *   'generated' — production PR URL detected (via URL context, label, or [SCv2:production] marker)
+ *   'validated' — production PR exists AND a confirmation phrase was found (e.g. "paso a producción exitoso")
+ */
+function detectPrdPr(comments) {
+  let foundPrUrl = null;
+
+  for (const c of comments) {
+    const rawText = typeof c.body === 'string' ? c.body : extractTextFromAdf(c.body);
+    if (!rawText) continue;
+
+    // Quick check: [SCv2:production] marker means this comment describes a production PR
+    if (SCV2_PRODUCTION_RE.test(rawText)) {
+      // Try to extract the PR URL from this comment
+      PR_URL_RE.lastIndex = 0;
+      const m = PR_URL_RE.exec(rawText);
+      if (m) foundPrUrl = m[0].replace(/[.,;)]+$/, '');
+      if (!foundPrUrl) foundPrUrl = 'marker'; // marker detected but no URL extracted
+      continue; // keep scanning for validation phrases
+    }
+
+    // Standard scan: look for PR URLs with production context
+    PR_URL_RE.lastIndex = 0;
+    let match;
+    while ((match = PR_URL_RE.exec(rawText)) !== null) {
+      const url = match[0].replace(/[.,;)]+$/, '');
+      // Context window around the URL (±300 chars)
+      const start = Math.max(0, match.index - 300);
+      const end = Math.min(rawText.length, match.index + url.length + 300);
+      const context = rawText.slice(start, end);
+
+      // Strip URLs from context to avoid false positives (e.g. "dev" in "dev.azure.com")
+      const contextNoUrls = context.replace(/https?:\/\/[^\s"'<>)]+/g, '');
+
+      // Check for a PR label first (e.g. PR_PRD, PR_Produccion, PR_Master)
+      const hasLabel = PRD_LABEL_RE.test(contextNoUrls);
+      const hasPrd = PRD_CONTEXT_RE.test(contextNoUrls);
+      const hasDev = DEV_CONTEXT_RE.test(contextNoUrls);
+
+      if (hasLabel || (hasPrd && !hasDev)) {
+        foundPrUrl = url;
+      }
+    }
+  }
+
+  // No production PR detected
+  if (!foundPrUrl) return { prStatus: 'pending', prUrl: null };
+
+  // PR detected — now check if deploy was validated/confirmed
+  const cleanUrl = foundPrUrl === 'marker' ? null : foundPrUrl;
+  for (const c of comments) {
+    const rawText = typeof c.body === 'string' ? c.body : extractTextFromAdf(c.body);
+    if (!rawText) continue;
+    if (DEPLOY_VALIDATED_RE.some(re => re.test(rawText))) {
+      return { prStatus: 'validated', prUrl: cleanUrl };
+    }
+  }
+
+  return { prStatus: 'generated', prUrl: cleanUrl };
+}
+
 
 function extractDeployDate(text) {
   const now = new Date();
@@ -68,40 +155,90 @@ router.get('/pending-deploys', async (req, res) => {
     });
 
     const data = await jira.get(jira.restApi(`/search?${params}`));
-    const results = [];
+    const issues = data.issues || [];
 
-    for (const issue of (data.issues || [])) {
+    // Step 1: Pre-filter — only keep issues whose comments mention production at all
+    const candidates = [];
+    for (const issue of issues) {
       const comments = issue.fields?.comment?.comments || [];
-      let matchedComment = null;
-      let deployDate = null;
+      const hasProductionMention = comments.some(c => {
+        const text = typeof c.body === 'string' ? c.body : extractTextFromAdf(c.body);
+        return DEPLOY_COMMENT_KEYWORDS.some(re => re.test(text));
+      });
+      if (hasProductionMention) candidates.push(issue);
+    }
 
-      // Scan from latest comment backwards
+    // Step 2: Use Gemini AI to classify deploy intent for all candidates in parallel
+    const classifiedCandidates = await Promise.all(
+      candidates.map(async (issue) => {
+        const comments = issue.fields?.comment?.comments || [];
+        const simplifiedComments = comments.map(c => ({
+          author: c.author?.displayName || c.author?.emailAddress || 'Desconocido',
+          body: typeof c.body === 'string' ? c.body : extractTextFromAdf(c.body),
+          created: c.created,
+        }));
+        const ai = await classifyDeployIntent(issue.key, simplifiedComments);
+        console.log(`🤖 ${issue.key}: authorized=${ai.isDeployAuthorized} hasPrdPr=${ai.hasPrdPr} validated=${ai.isDeployValidated} | ${ai.reason}`);
+        return { issue, ai, comments };
+      })
+    );
+
+    // Step 3: Build results — only include issues where AI confirms deploy authorization or PRD PR
+    const results = [];
+    for (const { issue, ai, comments } of classifiedCandidates) {
+      if (!ai.isDeployAuthorized && !ai.hasPrdPr && !ai.isDeployValidated) continue;
+
+      // Determine PR status: AI > regex fallback
+      let prStatus = ai.isDeployValidated ? 'validated' : ai.hasPrdPr ? 'generated' : 'pending';
+      const regexResult = detectPrdPr(comments);
+      const prUrl = regexResult.prUrl;
+      if (regexResult.prStatus === 'validated' && prStatus !== 'validated') prStatus = 'validated';
+      if (regexResult.prStatus === 'generated' && prStatus === 'pending') prStatus = 'generated';
+
+      // Extract deploy date
+      let deployDate = ai.deployDate || null;
+      if (!deployDate) {
+        for (const c of comments.slice().reverse()) {
+          const text = typeof c.body === 'string' ? c.body : extractTextFromAdf(c.body);
+          if (DEPLOY_COMMENT_KEYWORDS.some(re => re.test(text))) {
+            deployDate = extractDeployDate(text);
+            break;
+          }
+        }
+      }
+
+      // Find comment snippet
+      let matchedComment = null;
       for (const c of comments.slice().reverse()) {
         const text = typeof c.body === 'string' ? c.body : extractTextFromAdf(c.body);
-        const hasKeyword = DEPLOY_COMMENT_KEYWORDS.some(re => re.test(text));
-        if (hasKeyword) {
+        if (DEPLOY_COMMENT_KEYWORDS.some(re => re.test(text))) {
           matchedComment = {
             author: c.author?.displayName || c.author?.emailAddress || 'Desconocido',
             date: c.created,
             snippet: text.trim().slice(0, 160),
           };
-          deployDate = extractDeployDate(text);
           break;
         }
       }
-
-      if (matchedComment) {
-        results.push({
-          key: issue.key,
-          summary: issue.fields?.summary,
-          status: issue.fields?.status?.name,
-          assignee: issue.fields?.assignee?.displayName || null,
-          assigneeInitial: issue.fields?.assignee?.displayName?.charAt(0)?.toUpperCase() || null,
-          updated: issue.fields?.updated,
-          deployDate,
-          comment: matchedComment,
-        });
+      if (!matchedComment && comments.length > 0) {
+        const last = comments[comments.length - 1];
+        const text = typeof last.body === 'string' ? last.body : extractTextFromAdf(last.body);
+        matchedComment = { author: last.author?.displayName || 'Desconocido', date: last.created, snippet: text.trim().slice(0, 160) };
       }
+
+      results.push({
+        key: issue.key,
+        summary: issue.fields?.summary,
+        status: issue.fields?.status?.name,
+        assignee: issue.fields?.assignee?.displayName || null,
+        assigneeInitial: issue.fields?.assignee?.displayName?.charAt(0)?.toUpperCase() || null,
+        updated: issue.fields?.updated,
+        deployDate,
+        comment: matchedComment,
+        prStatus,
+        prUrl,
+        aiReason: ai.reason,
+      });
     }
 
     res.json({ total: results.length, issues: results });

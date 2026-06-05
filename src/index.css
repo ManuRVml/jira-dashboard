@@ -480,6 +480,132 @@ tr:hover td {
 }
 
 /* ======================== */
+/* Filters Row              */
+/* ======================== */
+
+.filters-row {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(15, 23, 42, 0.4);
+}
+
+.filter-chip-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.filter-select {
+  appearance: none;
+  background: var(--bg-input);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath fill='%239494b8' d='M5 7L1 3h8z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 6px 30px 6px 12px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition);
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.filter-select:hover {
+  border-color: var(--border-light);
+  color: var(--text-primary);
+  background-color: var(--bg-card-hover);
+}
+
+.filter-select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-glow);
+  color: var(--text-primary);
+}
+
+.filter-select option {
+  background: var(--bg-card);
+  color: var(--text-primary);
+  padding: 8px;
+}
+
+/* Highlight select when a value is chosen */
+.filter-select:not([value=""]):valid {
+  border-color: rgba(99, 102, 241, 0.35);
+  color: var(--accent-light);
+}
+
+.active-filters-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.filter-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: rgba(99, 102, 241, 0.12);
+  border: 1px solid rgba(99, 102, 241, 0.25);
+  border-radius: 16px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--accent-light);
+  animation: filterTagIn 0.2s ease;
+}
+
+@keyframes filterTagIn {
+  from { opacity: 0; transform: scale(0.9); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.filter-tag button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: none;
+  background: rgba(99, 102, 241, 0.2);
+  color: var(--accent-light);
+  border-radius: 50%;
+  font-size: 0.7rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: all var(--transition);
+  padding: 0;
+}
+
+.filter-tag button:hover {
+  background: rgba(239, 68, 68, 0.3);
+  color: var(--danger);
+}
+
+.filter-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 10px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 0 5px;
+  margin-left: 2px;
+}
+
+/* ======================== */
 /* Badges                   */
 /* ======================== */
 
@@ -4019,6 +4145,46 @@ tr:hover td {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 500px;
+}
+
+/* PR Status Badges */
+.pr-badge {
+  font-size: 0.65rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 99px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  letter-spacing: 0.01em;
+  transition: all 0.18s ease;
+}
+
+.pr-badge-generated {
+  background: rgba(20, 184, 166, 0.14);
+  color: #2dd4bf;
+  border: 1px solid rgba(20, 184, 166, 0.3);
+}
+
+.pr-badge-generated:hover {
+  background: rgba(20, 184, 166, 0.22);
+  box-shadow: 0 0 8px rgba(20, 184, 166, 0.2);
+}
+
+.pr-badge-pending {
+  background: rgba(245, 158, 11, 0.14);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.pr-badge-validated {
+  background: rgba(16, 185, 129, 0.16);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.35);
+}
+
+.pr-badge-validated:hover {
+  background: rgba(16, 185, 129, 0.25);
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.25);
 }
 
 /* ===================================== */

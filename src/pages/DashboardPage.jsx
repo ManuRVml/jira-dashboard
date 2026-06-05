@@ -322,6 +322,29 @@ export default function DashboardPage() {
                             <div style={{ flex: 1, minWidth: 0 }}>
                               <div className="pending-deploy-item-left">
                                 <span className="pending-deploy-key">{issue.key}</span>
+                                {issue.prStatus === 'validated' ? (
+                                  <span
+                                    className="pr-badge pr-badge-validated"
+                                    title={issue.prUrl ? 'Abrir PR — deploy confirmado exitoso' : 'Deploy a producción confirmado'}
+                                    onClick={issue.prUrl ? (e) => { e.stopPropagation(); window.open(issue.prUrl, '_blank'); } : undefined}
+                                    style={issue.prUrl ? { cursor: 'pointer' } : undefined}
+                                  >
+                                    Desplegado ✅
+                                  </span>
+                                ) : issue.prStatus === 'generated' ? (
+                                  <span
+                                    className="pr-badge pr-badge-generated"
+                                    title={issue.prUrl ? 'Abrir PR de producción' : 'PR a producción detectado'}
+                                    onClick={issue.prUrl ? (e) => { e.stopPropagation(); window.open(issue.prUrl, '_blank'); } : undefined}
+                                    style={issue.prUrl ? { cursor: 'pointer' } : undefined}
+                                  >
+                                    PR Generado 🔀
+                                  </span>
+                                ) : (
+                                  <span className="pr-badge pr-badge-pending" title="No se detectó PR a producción en los comentarios">
+                                    PR Pendiente ⏳
+                                  </span>
+                                )}
                                 <span className="pending-deploy-summary">{issue.summary}</span>
                               </div>
                               {issue.comment && (

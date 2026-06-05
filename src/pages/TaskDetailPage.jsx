@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useIssue } from '../hooks/useJira';
 import { StatusBadge, PriorityBadge, WarrantyBadge } from '../components/StatusBadge';
@@ -6,6 +6,16 @@ import { api } from '../lib/api';
 import { wikiToHtml } from '../lib/wikiMarkup';
 import StructuredCommentForm from '../components/StructuredCommentForm';
 import TimeBar from '../components/TimeBar';
+
+const WARRANTY_RE = /caso\s+en\s+garant[ií]a/i;
+const WARRANTY_TYPE_RE = /COMMENT_TYPE:warranty|\[SCv2:warranty\]/;
+const detectWarranty = (cmts) =>
+  cmts.some(c => {
+    const body = c.body || '';
+    const text = typeof body === 'string' ? body
+      : (body.content ? body.content.map(n => n.text || (n.content?.map(m => m.text || '').join('') || '')).join(' ') : '');
+    return WARRANTY_RE.test(text) || WARRANTY_TYPE_RE.test(text);
+  });
 
 export default function TaskDetailPage() {
   const { key } = useParams();
@@ -33,15 +43,6 @@ export default function TaskDetailPage() {
 
   // Warranty state
   const [markingWarranty, setMarkingWarranty] = useState(false);
-  const WARRANTY_RE = /caso\s+en\s+garant[ií]a/i;
-  const WARRANTY_TYPE_RE = /COMMENT_TYPE:warranty|\[SCv2:warranty\]/;
-  const detectWarranty = (cmts) =>
-    cmts.some(c => {
-      const body = c.body || '';
-      const text = typeof body === 'string' ? body
-        : (body.content ? body.content.map(n => n.text || (n.content?.map(m => m.text || '').join('') || '')).join(' ') : '');
-      return WARRANTY_RE.test(text) || WARRANTY_TYPE_RE.test(text);
-    });
 
   useEffect(() => {
     if (!key) return;
@@ -83,7 +84,7 @@ export default function TaskDetailPage() {
   const comments = fields.comment?.comments || [];
   const attachments = fields.attachment || [];
   const changelog = issue.changelog?.histories || [];
-  const isWarranty = detectWarranty(comments);
+  const isWarranty = useMemo(() => detectWarranty(comments), [comments]);
 
   const handleMarkWarranty = async () => {
     if (isWarranty) return; // already marked
@@ -92,7 +93,7 @@ export default function TaskDetailPage() {
       await api.markAsWarranty(key, true);
       refresh(); // reload comments so detection picks it up
     } catch (err) {
-      alert('Error al marcar como Garantía: ' + err.message);
+      setToast({ type: 'error', msg: '❌ Error al marcar como Garantía: ' + err.message });
     } finally {
       setMarkingWarranty(false);
     }
@@ -405,7 +406,7 @@ export default function TaskDetailPage() {
     return results.sort((a, b) => a.date - b.date);
   };
 
-  const deployDates = extractDeploymentDates();
+  const deployDates = useMemo(() => extractDeploymentDates(), [comments, fields]); // eslint-disable-line react-hooks/exhaustive-deps
 
 
   return (
@@ -567,7 +568,31 @@ export default function TaskDetailPage() {
                           </div>
                           <div className="comment-text">
                             {isStructured
-                              ? renderStructuredComment(text)
+                              ? (() => {
+                                  // Strip SCv2 / STRUCTURED_COMMENT markers AND the leading type heading
+                                  // from Jira-rendered HTML (the type badge is already shown in comment meta)
+                                  const stripMarkers = (html) => {
+                                    let h = html
+                                      // 1. Strip SCv2 color markers first
+                                      .replace(/<p>\s*<font[^>]*>\s*<span[^>]*>&#91;SCv2:\w+&#93;<\/span>\s*<\/font>\s*<\/p>/gi, '')
+                                      .replace(/<font[^>]*>\s*<span[^>]*>&#91;SCv2:\w+&#93;<\/span>\s*<\/font>/gi, '')
+                                      // 2. Strip legacy HTML comment markers rendered as literal text
+                                      .replace(/&lt;!--\s*STRUCTURED_COMMENT(?::v\d+)?\s*--&gt;/g, '')
+                                      .replace(/&lt;!--\s*COMMENT_TYPE:\w+\s*--&gt;/g, '')
+                                      .replace(/&lt;!--\s*\/STRUCTURED_COMMENT\s*--&gt;/g, '')
+                                      // 3. Strip now-empty <p> tags (may contain only <br/> or whitespace after marker removal)
+                                      .replace(/<p>\s*(?:<br\s*\/?>)?\s*<\/p>/gi, '');
+                                    // 4. Strip the FIRST <h2> type heading (already shown as badge) — only the first one
+                                    h = h.replace(/<h2><a[^>]*><\/a>[^<]*<\/h2>/, '');
+                                    return h.trim();
+                                  };
+                                  const htmlContent = renderedHtml
+                                    ? stripMarkers(rewriteJiraImgUrls(renderedHtml))
+                                    : wikiToHtml(text);
+                                  return (
+                                    <div className="sc-rendered jira-rendered-html" dangerouslySetInnerHTML={{ __html: htmlContent }} />
+                                  );
+                                })()
                               : renderedHtml
                                 ? <div className="jira-rendered-html" dangerouslySetInnerHTML={{ __html: rewriteJiraImgUrls(renderedHtml) }} />
                                 : <span style={{ whiteSpace: 'pre-wrap' }}>{text}</span>
