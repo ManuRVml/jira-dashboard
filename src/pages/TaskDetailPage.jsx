@@ -65,6 +65,10 @@ export default function TaskDetailPage() {
     return () => clearTimeout(t);
   }, [toast]);
 
+  // Hooks must be called before any early returns (Rules of Hooks)
+  const comments = issue?.fields?.comment?.comments || [];
+  const isWarranty = useMemo(() => detectWarranty(comments), [comments]);
+
   if (loading) {
     return (
       <div className="loading">
@@ -81,10 +85,8 @@ export default function TaskDetailPage() {
   if (!issue) return null;
 
   const fields = issue.fields || {};
-  const comments = fields.comment?.comments || [];
   const attachments = fields.attachment || [];
   const changelog = issue.changelog?.histories || [];
-  const isWarranty = useMemo(() => detectWarranty(comments), [comments]);
 
   const handleMarkWarranty = async () => {
     if (isWarranty) return; // already marked
@@ -406,7 +408,7 @@ export default function TaskDetailPage() {
     return results.sort((a, b) => a.date - b.date);
   };
 
-  const deployDates = useMemo(() => extractDeploymentDates(), [comments, fields]); // eslint-disable-line react-hooks/exhaustive-deps
+  const deployDates = extractDeploymentDates();
 
 
   return (
